@@ -29,6 +29,8 @@ namespace GoToImplementation
         /// </summary>
         private readonly AsyncPackage package;
 
+        private readonly VisualStudioServices vsServices;
+
         /// <summary>
         /// Initializes a new instance of the <see cref="GoToImplementationCommand"/> class.
         /// Adds our command handlers for menu (commands must exist in the command table file)
@@ -39,6 +41,8 @@ namespace GoToImplementation
         {
             this.package = package ?? throw new ArgumentNullException(nameof(package));
             commandService = commandService ?? throw new ArgumentNullException(nameof(commandService));
+
+            vsServices = new VisualStudioServices(package);
 
             var menuCommandID = new CommandID(CommandSet, CommandId);
             var menuItem = new MenuCommand(this.Execute, menuCommandID);
@@ -86,20 +90,11 @@ namespace GoToImplementation
         /// </summary>
         /// <param name="sender">Event sender.</param>
         /// <param name="e">Event args.</param>
-        private void Execute(object sender, EventArgs e)
+        private async void Execute(object sender, EventArgs e)
         {
-            ThreadHelper.ThrowIfNotOnUIThread();
-            string message = string.Format(CultureInfo.CurrentCulture, "Inside {0}.MenuItemCallback()", this.GetType().FullName);
-            string title = "GoToImplementationCommand";
-
-            // Show a message box to prove we were here
-            VsShellUtilities.ShowMessageBox(
-                this.package,
-                message,
-                title,
-                OLEMSGICON.OLEMSGICON_INFO,
-                OLEMSGBUTTON.OLEMSGBUTTON_OK,
-                OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
+            await vsServices.GoToImplementationAsync();
         }
+
+        
     }
 }
