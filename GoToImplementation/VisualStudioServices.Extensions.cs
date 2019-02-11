@@ -81,6 +81,14 @@ namespace GoToImplementation
                             return true;
                         }
                     }
+
+                    // prio 3: we assume override or abstract
+                    var overrideSymbols = await SymbolFinder.FindOverridesAsync(selectedSymbol, document.Project.Solution);
+                    if (overrideSymbols.Any())
+                    {
+                        NavigateTo(overrideSymbols, document.Project, selectedSymbol);
+                        return true;
+                    }
                 }
                 catch (System.Exception ex)
                 {
@@ -88,11 +96,13 @@ namespace GoToImplementation
                 }
             }
 
-            // default behaviour as F12 => Go to definition
+            // default behaviour: Go to definition as F12 or NavigateBackward Ctrl + -
             return await TryGoToDefinitionOrNavigateBackwardAsync(document.Project, selectedSymbol, currentPosition);
         }
 
-        private Stack<(SnapshotPoint position, ISymbol symbol)> _positionHistory = new Stack<(SnapshotPoint position, ISymbol symbol)>();
+        //private (SnapshotPoint position, ISymbol symbol) _lastInterface;
+
+        //private Stack<(SnapshotPoint position, ISymbol symbol)> _positionHistory = new Stack<(SnapshotPoint position, ISymbol symbol)>();
 
         public bool NavigateTo(IEnumerable<ISymbol> symbols, Project currentProject, ISymbol selectedSymbol)
         {
