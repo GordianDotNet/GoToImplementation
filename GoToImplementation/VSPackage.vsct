@@ -75,6 +75,10 @@
     </Bitmaps>
   </Commands>
 
+  <KeyBindings>
+    <KeyBinding guid="guidEditorContextMenuGroup" id="GoToImplementationCommandId" editor="guidVSStd97" key1="Q" mod1="Alt" />
+  </KeyBindings>
+
   <Symbols>
     <!-- This is the package guid. -->
     <GuidSymbol name="guidVSPackage" value="{2db123d5-dbea-424e-9eef-2a72929f10e6}" />

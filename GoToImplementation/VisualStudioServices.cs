@@ -1,4 +1,6 @@
-﻿using Microsoft;
+﻿using EnvDTE;
+using EnvDTE80;
+using Microsoft;
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.ComponentModelHost;
 using Microsoft.VisualStudio.Editor;
@@ -33,6 +35,11 @@ namespace GoToImplementation
             ErrorHandler.ThrowOnFailure(obj.GetActiveView(1, null, out activeView));
             return ComponentModel.GetService<IVsEditorAdaptersFactoryService>().GetWpfTextView(activeView);
         }   
+
+        public async Task<DTE2> GetDTE2Async()
+        {
+            return await Package.GetServiceAsync(typeof(DTE)) as DTE2;
+        }
 
         public IVsUIShell6 VsUIShell6
         {
