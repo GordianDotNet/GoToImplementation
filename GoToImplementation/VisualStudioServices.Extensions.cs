@@ -51,6 +51,44 @@ namespace GoToImplementation
                 return false;
             }
 
+            if (_interfaceNavigation.interfaceSymbols != null)
+            {
+                if (_interfaceNavigation.interfaceSymbols.Count() > 1)
+                {
+                    if (selectedSymbol == _interfaceNavigation.interfaceSymbols.Pop())
+                    {
+                        return TryGoToDefinition(document.Project, _interfaceNavigation.interfaceSymbols.Peek());
+                    }
+                    else
+                    {
+                        _interfaceNavigation = (null, currentPosition);
+                    }
+                }
+                else if (_interfaceNavigation.interfaceSymbols.Count() == 1)
+                {
+                    if (selectedSymbol == _interfaceNavigation.interfaceSymbols.Pop())
+                    {
+                        try
+                        {
+                            var newDocument = _interfaceNavigation.startPosition.Snapshot.GetOpenDocumentInCurrentContextWithChanges();
+                            VisualStudioWorkspace.OpenDocument(newDocument.Id, true);
+                            var dte = await GetDTE2Async();
+                            var command = "Edit.GoTo";
+                            var line = _interfaceNavigation.startPosition.GetContainingLine().LineNumber + 1;
+                            dte.ExecuteCommand(command, line.ToString());
+                            //var wpfTextViewNew = await GetWpfTextViewAsync();
+                            //wpfTextViewNew.Caret.MoveTo(new SnapshotPoint(wpfTextViewNew.TextSnapshot, _interfaceNavigation.startPosition.Position));
+                            return true;
+                        }
+                        catch (System.Exception ex)
+                        {
+                            Debug.WriteLine(ex.Message);
+                            return true;
+                        }
+                    }
+                }
+            }
+
             // search implementation only if method or property symbol
             if (selectedSymbol is IMethodSymbol || selectedSymbol is IPropertySymbol)
             {
@@ -60,6 +98,7 @@ namespace GoToImplementation
                     var implSymbols = await SymbolFinder.FindImplementationsAsync(selectedSymbol, document.Project.Solution);
                     if (implSymbols.Any())
                     {
+                        _interfaceNavigation = (new Stack<ISymbol>(implSymbols.Reverse()), currentPosition);
                         NavigateTo(implSymbols, document.Project, selectedSymbol);
                         return true;
                     }
@@ -99,7 +138,7 @@ namespace GoToImplementation
             // default behaviour: Go to definition as F12 or NavigateBackward Ctrl + -
             return await TryGoToDefinitionOrNavigateBackwardAsync(document.Project, selectedSymbol, currentPosition);
         }
-
+        private (Stack<ISymbol> interfaceSymbols, SnapshotPoint startPosition) _interfaceNavigation;
         //private (SnapshotPoint position, ISymbol symbol) _lastInterface;
 
         //private Stack<(SnapshotPoint position, ISymbol symbol)> _positionHistory = new Stack<(SnapshotPoint position, ISymbol symbol)>();
