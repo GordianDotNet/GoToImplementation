@@ -153,8 +153,9 @@ namespace GoToImplementation
                 var newDocument = position.Snapshot.GetOpenDocumentInCurrentContextWithChanges();
                 if (newDocument == null)
                 {
-                    // document was closed => preview window => TODO
-                    return false;
+                    // document was closed => preview window
+                    await NavigateBackAsync();
+                    return true;
                 }
 
                 if (currentDocument.Id != newDocument.Id)
