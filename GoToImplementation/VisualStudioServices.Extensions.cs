@@ -10,6 +10,7 @@ using System.Threading;
 using Microsoft.VisualStudio.Text;
 using Microsoft.VisualStudio.Text.Editor;
 using System.Diagnostics;
+using System;
 
 namespace GoToImplementation
 {
@@ -30,8 +31,8 @@ namespace GoToImplementation
         public async Task<bool> GoToImplementationAsync()
         {
             var wpfTextView = await GetWpfTextViewAsync();
-
             var currentPosition = wpfTextView.Caret.Position.BufferPosition;
+
             var document = currentPosition.Snapshot.GetOpenDocumentInCurrentContextWithChanges();
             if (document == null)
             {
@@ -39,55 +40,22 @@ namespace GoToImplementation
                 return false;
             }
 
-            currentPosition = wpfTextView.Caret.Position.BufferPosition;
-            int position = currentPosition.Position;
             var semanticModel = await document.GetSemanticModelAsync();
 
             // find symbol at caret position
-            var selectedSymbol = await SymbolFinder.FindSymbolAtPositionAsync(semanticModel, position, document.Project.Solution.Workspace);
+            var selectedSymbol = await SymbolFinder.FindSymbolAtPositionAsync(semanticModel, currentPosition.Position, document.Project.Solution.Workspace);
             if (selectedSymbol == null)
             {
                 // no symbol selected => we can't help
                 return false;
             }
 
-            if (_interfaceNavigation.interfaceSymbols != null)
+            if (await NavigateThroughInterfaceImplementationsAsync(document, selectedSymbol, currentPosition))
             {
-                if (_interfaceNavigation.interfaceSymbols.Count() > 1)
-                {
-                    if (selectedSymbol == _interfaceNavigation.interfaceSymbols.Pop())
-                    {
-                        return TryGoToDefinition(document.Project, _interfaceNavigation.interfaceSymbols.Peek());
-                    }
-                    else
-                    {
-                        _interfaceNavigation = (null, currentPosition);
-                    }
-                }
-                else if (_interfaceNavigation.interfaceSymbols.Count() == 1)
-                {
-                    if (selectedSymbol == _interfaceNavigation.interfaceSymbols.Pop())
-                    {
-                        try
-                        {
-                            var newDocument = _interfaceNavigation.startPosition.Snapshot.GetOpenDocumentInCurrentContextWithChanges();
-                            VisualStudioWorkspace.OpenDocument(newDocument.Id, true);
-                            var dte = await GetDTE2Async();
-                            var command = "Edit.GoTo";
-                            var line = _interfaceNavigation.startPosition.GetContainingLine().LineNumber + 1;
-                            dte.ExecuteCommand(command, line.ToString());
-                            //var wpfTextViewNew = await GetWpfTextViewAsync();
-                            //wpfTextViewNew.Caret.MoveTo(new SnapshotPoint(wpfTextViewNew.TextSnapshot, _interfaceNavigation.startPosition.Position));
-                            return true;
-                        }
-                        catch (System.Exception ex)
-                        {
-                            Debug.WriteLine(ex.Message);
-                            return true;
-                        }
-                    }
-                }
+                return true;
             }
+
+            _interfaceNavigationState = null;
 
             // search implementation only if method or property symbol
             if (selectedSymbol is IMethodSymbol || selectedSymbol is IPropertySymbol)
@@ -98,9 +66,15 @@ namespace GoToImplementation
                     var implSymbols = await SymbolFinder.FindImplementationsAsync(selectedSymbol, document.Project.Solution);
                     if (implSymbols.Any())
                     {
-                        _interfaceNavigation = (new Stack<ISymbol>(implSymbols.Reverse()), currentPosition);
-                        NavigateTo(implSymbols, document.Project, selectedSymbol);
-                        return true;
+                        var symbolsToVisit = new List<ISymbol>();
+                        symbolsToVisit.Add(selectedSymbol);
+                        symbolsToVisit.AddRange(implSymbols);
+                        _interfaceNavigationState = new NavigationState
+                        {
+                            SymbolsToVisit = symbolsToVisit,
+                            NavigateToPositionAtTheEnd = currentPosition
+                        };
+                        return await TryGoToDefinitionOrNavigateBackwardAsync(document, selectedSymbol, currentPosition);
                     }
 
                     // prio 2: we assume that it is an implementation of an interface method/property
@@ -136,12 +110,96 @@ namespace GoToImplementation
             }
 
             // default behaviour: Go to definition as F12 or NavigateBackward Ctrl + -
-            return await TryGoToDefinitionOrNavigateBackwardAsync(document.Project, selectedSymbol, currentPosition);
+            return await TryGoToDefinitionOrNavigateBackwardAsync(document, selectedSymbol, currentPosition);
         }
-        private (Stack<ISymbol> interfaceSymbols, SnapshotPoint startPosition) _interfaceNavigation;
-        //private (SnapshotPoint position, ISymbol symbol) _lastInterface;
 
-        //private Stack<(SnapshotPoint position, ISymbol symbol)> _positionHistory = new Stack<(SnapshotPoint position, ISymbol symbol)>();
+        
+
+        private NavigationState _interfaceNavigationState;
+        private async Task<bool> NavigateThroughInterfaceImplementationsAsync(Document currentDocument, ISymbol selectedSymbol, SnapshotPoint currentPosition)
+        {
+            if (_interfaceNavigationState != null)
+            {
+                // check if count is greater than 2
+                if (_interfaceNavigationState.SymbolsToVisit.Count() > 1)
+                {
+                    // check if user didn't move elsewhere
+                    if (selectedSymbol.ToString() == _interfaceNavigationState.SymbolsToVisit.First().ToString())
+                    {
+                        _interfaceNavigationState.SymbolsToVisit.RemoveAt(0);
+                        return TryGoToDefinition(currentDocument.Project, _interfaceNavigationState.SymbolsToVisit.First());
+                    }
+                    else
+                    {
+                        _interfaceNavigationState = null;
+                    }
+                }
+                else if (_interfaceNavigationState.SymbolsToVisit.Count() == 1)
+                {
+                    if (selectedSymbol.ToString() == _interfaceNavigationState.SymbolsToVisit.First().ToString())
+                    {
+                        return await GotoPositionAsync(currentDocument, _interfaceNavigationState.NavigateToPositionAtTheEnd);
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private async Task<bool> GotoPositionAsync(Document currentDocument, SnapshotPoint position)
+        {
+            try
+            {
+                var newDocument = position.Snapshot.GetOpenDocumentInCurrentContextWithChanges();
+                if (newDocument == null)
+                {
+                    // document was closed => preview window => TODO
+                    return false;
+                }
+
+                if (currentDocument.Id != newDocument.Id)
+                {
+                    VisualStudioWorkspace.OpenDocument(newDocument.Id, true);
+                    //await System.Threading.Tasks.Task.Delay(1000);
+                }
+
+                //VisualStudioWorkspace.OpenDocument(newDocument.Id, true);
+                var wpfTextViewNew = await GetWpfTextViewAsync();
+                wpfTextViewNew.Caret.MoveTo(new SnapshotPoint(position.Snapshot, position.Position));
+                wpfTextViewNew.Caret.EnsureVisible();
+                EnsureCaretVisible(wpfTextViewNew, true);
+
+                //wpfTextViewNew.Caret.IsHidden = false;
+
+                //wpfTextViewNew.Caret.MoveToPreferredCoordinates();
+                //wpfTextViewNew.Caret.MoveToNextCaretPosition();
+                //await System.Threading.Tasks.Task.Delay(200);
+                //var dte = await GetDTE2Async();
+                //var command = "Edit.GoTo";
+                //var line = _interfaceNavigation.startPosition.GetContainingLine().LineNumber + 1;
+                //dte.ExecuteCommand(command, line.ToString());
+
+                return true;
+            }
+            catch (System.Exception ex)
+            {
+                Debug.WriteLine(ex.Message);
+                return true;
+            }
+        }
+
+        public static void EnsureCaretVisible(ITextView textView, bool center = false)
+        {
+            if (textView == null)
+                throw new ArgumentNullException(nameof(textView));
+
+            var position = textView.Caret.Position.VirtualBufferPosition;
+            var options = EnsureSpanVisibleOptions.ShowStart;
+            if (center)
+                options |= EnsureSpanVisibleOptions.AlwaysCenter;
+
+            textView.ViewScroller.EnsureSpanVisible(new VirtualSnapshotSpan(position, position), options);
+        }
 
         public bool NavigateTo(IEnumerable<ISymbol> symbols, Project currentProject, ISymbol selectedSymbol)
         {
@@ -154,67 +212,48 @@ namespace GoToImplementation
             return TryGoToDefinition(currentProject, searchSymbol);
         }
 
-        private async Task<bool> TryGoToDefinitionOrNavigateBackwardAsync(Project currentProject, ISymbol searchSymbol, SnapshotPoint currentPosition)
+        private SnapshotPoint? _oldPosition = null;
+        private async Task<bool> TryGoToDefinitionOrNavigateBackwardAsync(Document currentDocument, ISymbol searchSymbol, SnapshotPoint currentPosition)
         {
-            var goToDefinitionSuccessful = TryGoToDefinition(currentProject, searchSymbol);
+            var goToDefinitionSuccessful = TryGoToDefinition(currentDocument.Project, searchSymbol);
 
             var wpfTextView = await GetWpfTextViewAsync();
             var newPosition = wpfTextView.Caret.Position.BufferPosition;
 
             if (currentPosition == newPosition)
             {
-                try
+                //await NavigateBackAsync();
+
+                if (_oldPosition.HasValue)
                 {
-                    var dte = await GetDTE2Async();
-                    var command = "View.NavigateBackward";
-                    dte.ExecuteCommand(command);
+                    await GotoPositionAsync(currentDocument, _oldPosition.Value);
+                    _oldPosition = null;
                 }
-                catch (System.Exception ex)
+                else
                 {
-                    Debug.WriteLine(ex.Message);
+                    //_oldPosition = newPosition;
                 }
-
-                ////if (_positionHistory.Count > 0)
-                //{
-                //    //var (oldPosition, oldSymbol) = _positionHistory.Pop();
-                //    //var newDocument = newPosition.Snapshot.GetOpenDocumentInCurrentContextWithChanges();
-                //    //var oldDocument = oldPosition.Snapshot.GetOpenDocumentInCurrentContextWithChanges();
-
-                //    //if (newDocument.Id != oldDocument.Id)
-                //    //{
-                //    //    VisualStudioWorkspace.OpenDocument(oldDocument.Id, true);
-                //    //}
-                //    //else
-                //    //{
-                //        try
-                //        {
-                //            //wpfTextView.Caret.MoveTo(wpfTextView.GetTextViewLineContainingBufferPosition(wpfTextView.TextSnapshot.GetLineFromPosition(wpfTextView.TextSnapshot.GetText().IndexOf(fn)).Start));
-                //            //System.Windows.Forms.SendKeys.Send("{RIGHT}");
-                //            //wpfTextView.Caret.MoveTo(new SnapshotPoint(wpfTextView.TextSnapshot, oldPosition.Position));//.Select(new SnapshotSpan(oldPosition, 1), false);
-                //            //System.Windows.Forms.SendKeys.Send("^(-)");
-                //            var dte = await GetDTE2Async();
-                //            //var i = dte.Commands.Count;
-                //            var command = "View.NavigateBackward";
-                //            dte.ExecuteCommand(command);
-                //        }
-                //        catch (System.Exception ex)
-                //        {
-                //            Debug.WriteLine(ex.Message);
-                //        }
-                //    //}
-
-                //}
-                ////else
-                ////{
-                ////    _positionHistory.Push((currentPosition, searchSymbol));
-                ////}
             }
-            //else
-            //{
-            //    _positionHistory.Push((currentPosition, searchSymbol));
-            //}
+            else
+            {
+                _oldPosition = currentPosition;
+            }
 
             return goToDefinitionSuccessful;
+        }
+
+        private async System.Threading.Tasks.Task NavigateBackAsync()
+        {
+            try
+            {
+                var dte = await GetDTE2Async();
+                var command = "View.NavigateBackward";
+                dte.ExecuteCommand(command);
+            }
+            catch (System.Exception ex)
+            {
+                Debug.WriteLine(ex.Message);
+            }
         }
 
         private bool TryGoToDefinition(Project currentProject, ISymbol searchSymbol)
